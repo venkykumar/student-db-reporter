@@ -1,0 +1,10 @@
+/vendor/
+/.env
+/writable/logs/*
+/writable/cache/*
+/writable/session/*
+!/writable/logs/.gitkeep
+!/writable/cache/.gitkeep
+!/writable/session/.gitkeep
+/.idea/
+*.DS_Store

@@ -1,0 +1,7 @@
+vendor/
+.git/
+.idea/
+*.DS_Store
+writable/logs/*
+writable/cache/*
+writable/session/*
