@@ -27,6 +27,16 @@ class Reports
         'student_subject_completion',
     ];
 
+    /**
+     * CI4 database connection group to read from.
+     *
+     * Defaults to 'default', i.e. whatever your app/Config/Database.php
+     * has set as $defaultGroup. Point this at a read replica or a
+     * dedicated analytics group to keep AI report queries off the
+     * primary write connection.
+     */
+    public string $connectionGroup = 'default';
+
     /** Rows per table sent to Claude as sample data. 0 disables sampling. */
     public int $sampleRowLimit = 3;
 

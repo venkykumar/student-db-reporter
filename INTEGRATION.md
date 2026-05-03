@@ -40,6 +40,8 @@ Add this app's **AI-driven report generator** to an existing CodeIgniter 4 proje
 - [ ] Anthropic API key — https://console.anthropic.com
 - [ ] `writable/` is writable by the PHP user (CI4 already needs this)
 
+The reporter reads from your existing CI4 DB connection (configured in `app/Config/Database.php`). By default it uses the `default` connection group; override via `Config\Reports::$connectionGroup` to point at a read replica or analytics DB. **No new connection setup is required** if your app already talks to MySQL.
+
 ---
 
 ## Phase 1 — Install (≈10 min)
@@ -147,6 +149,9 @@ class Reports
         'courses',
         'assessments',
     ];
+
+    /** CI4 DB connection group. 'default' uses app/Config/Database.php's default group. */
+    public string $connectionGroup = 'default';
 
     /** Rows per table sent as sample data. 0 disables sampling. */
     public int $sampleRowLimit = 3;
@@ -308,6 +313,7 @@ curl -fI "http://localhost:8080/reports/${REPORT_ID}?teacher_id=1"
 | Anyone can hit `/analysis` and burn API credit | No auth — wide open | Put the route behind your auth filter. Admin-only in most cases |
 | Anyone can run cached SQL | Validator is pre-execution; the cached SQL still queries any data in `$tables` | Restrict `/reports` to roles cleared to see all rows in `$tables` |
 | Long Claude call blocks the request | 60 s Guzzle timeout | Move `Analysis::run` to a queue (CI4 Tasks, Beanstalkd) if users hit timeouts |
+| AI report queries hit the primary DB | Uses `$connectionGroup = 'default'` | Define a read-replica or analytics group in `app/Config/Database.php` and set `Config\Reports::$connectionGroup` to its name. Keeps long aggregate scans off the write primary |
 | PII in schema sample | `SELECT * FROM {table} LIMIT N` — first N rows hit Claude | Either set `$sampleRowLimit = 0`, or redact in `SchemaInspectorService::getSampleRows()`, or run analysis only against a non-prod DB whose schema mirrors prod |
 | Cost | ~$0.01–$0.05 per analysis call | Don't expose `/analysis/run` to anonymous traffic; rate-limit |
 
@@ -344,6 +350,31 @@ That's the entire integration. Skip `Students.php`, skip `searchByName`, skip th
 
 See Phase 3 above. The only file edit beyond `Config/Reports.php` is adding `searchByName()` to `TeacherModel`.
 
+### "I want reports to hit a read replica, not my primary DB"
+
+In `app/Config/Database.php`, define a second group alongside `default`:
+
+```php
+public array $analytics = [
+    'DSN'      => '',
+    'hostname' => 'replica.internal',
+    'username' => 'analytics_ro',
+    'password' => '...',
+    'database' => 'student_db',
+    'DBDriver' => 'MySQLi',
+    // ... rest mirrors $default
+];
+```
+
+Then in `app/Config/Reports.php`:
+
+```diff
+- public string $connectionGroup = 'default';
++ public string $connectionGroup = 'analytics';
+```
+
+`SchemaInspectorService` and `ReportExecutorService` will both pick it up automatically — no other code changes.
+
 ### "I want to redact PII before it goes to Claude"
 
 Edit `SchemaInspectorService::getSampleRows()` — after the `SELECT *`, walk the rows and replace `email` / `phone` / `dob` columns with `'***'` (or set `$sampleRowLimit = 0` to skip sampling entirely; the schema alone is often enough).
@@ -357,6 +388,7 @@ Edit `SchemaInspectorService::getSampleRows()` — after the `SELECT *`, walk th
 | Field | Type | Default | Read by |
 |---|---|---|---|
 | `$tables` | `list<string>` | `['students','subjects','grades','student_subject_completion']` | `SchemaInspectorService`, `ClaudeService` |
+| `$connectionGroup` | `string` | `'default'` | `SchemaInspectorService`, `ReportExecutorService` |
 | `$sampleRowLimit` | `int` | `3` | `SchemaInspectorService` |
 | `$maxRowsPerReport` | `int` | `200` | `ReportExecutorService` |
 | `$minReports` / `$maxReports` | `int` / `int` | `6` / `10` | `ClaudeService` |

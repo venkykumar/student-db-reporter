@@ -12,8 +12,8 @@ class SchemaInspectorService
 
     public function __construct(?ReportsConfig $config = null)
     {
-        $this->db     = \Config\Database::connect();
         $this->config = $config ?? new ReportsConfig();
+        $this->db     = \Config\Database::connect($this->config->connectionGroup);
     }
 
     public function inspect(): array
