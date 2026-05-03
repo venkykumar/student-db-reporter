@@ -3,24 +3,24 @@
 namespace App\Services;
 
 use CodeIgniter\Database\BaseConnection;
+use Config\Reports as ReportsConfig;
 
 class ReportExecutorService
 {
-    /** Whitelist of placeholder names allowed in report SQL. */
-    private const ALLOWED_PLACEHOLDERS = ['student_id'];
-
     private BaseConnection $db;
+    private ReportsConfig $config;
 
-    public function __construct()
+    public function __construct(?ReportsConfig $config = null)
     {
-        $this->db = \Config\Database::connect();
+        $this->db     = \Config\Database::connect();
+        $this->config = $config ?? new ReportsConfig();
     }
 
     /**
      * Execute a report's SQL with optional named parameter bindings.
      *
      * @param string             $sql    SQL containing :placeholder names
-     * @param array<string,int>  $params Map of placeholder => value (only int values allowed)
+     * @param array<string,mixed> $params Map of placeholder => value (cast per Reports config)
      */
     public function execute(string $sql, array $params = []): array
     {
@@ -43,7 +43,7 @@ class ReportExecutorService
         }
 
         if (!preg_match('/\bLIMIT\s+\d+/i', $sql)) {
-            $sql = rtrim($sql, '; ') . ' LIMIT 200';
+            $sql = rtrim($sql, '; ') . ' LIMIT ' . (int) $this->config->maxRowsPerReport;
         }
 
         return $sql;
@@ -51,27 +51,30 @@ class ReportExecutorService
 
     /**
      * Replace :name placeholders with ? and produce a positional bindings array.
-     * Casts values to int (we only allow int IDs as parameters today).
+     * Cast type per placeholder is read from Reports::$allowedPlaceholders.
      *
-     * @return array{0: string, 1: array<int, int>}
+     * @return array{0: string, 1: array<int, int|string>}
      */
     private function bindNamedParameters(string $sql, array $params): array
     {
+        $allowed  = $this->config->allowedPlaceholders;
         $bindings = [];
 
         $boundSql = preg_replace_callback(
             '/:([a-zA-Z_][a-zA-Z0-9_]*)/',
-            function (array $m) use ($params, &$bindings): string {
+            function (array $m) use ($allowed, $params, &$bindings): string {
                 $name = $m[1];
 
-                if (!in_array($name, self::ALLOWED_PLACEHOLDERS, true)) {
+                if (!array_key_exists($name, $allowed)) {
                     throw new \RuntimeException("Disallowed placeholder ':{$name}' in report SQL.");
                 }
                 if (!array_key_exists($name, $params)) {
                     throw new \RuntimeException("Missing value for placeholder ':{$name}'.");
                 }
 
-                $bindings[] = (int) $params[$name];
+                $bindings[] = $allowed[$name] === 'string'
+                    ? (string) $params[$name]
+                    : (int) $params[$name];
                 return '?';
             },
             $sql

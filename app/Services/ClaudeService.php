@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use Config\Reports as ReportsConfig;
 use GuzzleHttp\Client;
 use GuzzleHttp\Exception\GuzzleException;
 
@@ -10,8 +11,9 @@ class ClaudeService
     private Client $client;
     private string $apiKey;
     private string $model;
+    private ReportsConfig $config;
 
-    public function __construct()
+    public function __construct(?ReportsConfig $config = null)
     {
         // Try CI4's env() (reads .env + $_ENV/$_SERVER), then fall back to raw getenv()
         // (works for OS env vars not exposed to $_ENV when variables_order is restrictive)
@@ -21,6 +23,7 @@ class ClaudeService
             ?: (getenv('ANTHROPIC_API_KEY') ?: '');
 
         $this->model  = env('CLAUDE_MODEL', 'claude-sonnet-4-6');
+        $this->config = $config ?? new ReportsConfig();
 
         $this->client = new Client([
             'base_uri' => 'https://api.anthropic.com',
@@ -46,52 +49,7 @@ You must respond ONLY with a valid JSON array. Do not include any prose, markdow
 or explanation outside the JSON. The JSON must be parseable by json_decode() in PHP with no pre-processing.
 SYSTEM;
 
-        $schemaJson = json_encode($schema, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
-
-        $userPrompt = <<<USER
-Here is the database schema and sample data:
-
-{$schemaJson}
-
-Generate between 6 and 10 report recommendations. Each report must follow this exact JSON structure:
-
-[
-  {
-    "id": "snake_case_unique_identifier",
-    "title": "Human Readable Report Title",
-    "description": "One or two sentences describing what this report reveals.",
-    "category": "one of: academic_performance | completion_tracking | enrollment_demographics | subject_analysis | student_drilldown",
-    "sql": "SELECT ... (valid MySQL 8.0 query using only the tables in the schema above)",
-    "chart_type": "one of: bar | line | pie | doughnut | scatter",
-    "x_axis": "column name from the SELECT to use as the X axis or label",
-    "y_axis": "column name from the SELECT to use as the Y axis or numeric value",
-    "parameters": []
-  }
-]
-
-Rules for the sql field:
-- Use ONLY the tables: students, subjects, grades, student_subject_completion
-- Always alias computed columns with descriptive snake_case names
-- The column names in x_axis and y_axis must exactly match aliases used in the SELECT
-- Add LIMIT 50 to queries that could return many rows
-- Use only standard MySQL 8.0 syntax
-- Every query must start with SELECT
-
-Required: include EXACTLY ONE report in the "student_drilldown" category. This report must:
-- Be titled "Subject Performance for Student" (id: "student_subject_performance")
-- Show a single student's score across every subject (one bar per subject)
-- Use the placeholder :student_id in the WHERE clause (the app binds this at runtime)
-- Declare "parameters": ["student_id"] in the JSON spec
-- Example SQL shape:
-    SELECT s.name AS subject_name, g.score AS score
-    FROM grades g
-    JOIN subjects s ON g.subject_id = s.id
-    WHERE g.student_id = :student_id
-    ORDER BY s.name
-
-For all OTHER reports, parameters MUST be the empty array [].
-:student_id is the ONLY placeholder allowed; any other placeholder will be rejected.
-USER;
+        $userPrompt = $this->buildUserPrompt($schema);
 
         try {
             $response = $this->client->post('/v1/messages', [
@@ -112,5 +70,93 @@ USER;
         } catch (GuzzleException $e) {
             throw new \RuntimeException('Claude API request failed: ' . $e->getMessage(), 0, $e);
         }
+    }
+
+    private function buildUserPrompt(array $schema): string
+    {
+        $schemaJson  = json_encode($schema, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
+        $minReports  = $this->config->minReports;
+        $maxReports  = $this->config->maxReports;
+        $categories  = implode(' | ', $this->config->categories);
+        $tablesList  = implode(', ', $this->config->tables);
+        $drilldown   = $this->buildDrilldownBlock();
+        $placeholder = $this->buildPlaceholderRules();
+
+        return <<<USER
+Here is the database schema and sample data:
+
+{$schemaJson}
+
+Generate between {$minReports} and {$maxReports} report recommendations. Each report must follow this exact JSON structure:
+
+[
+  {
+    "id": "snake_case_unique_identifier",
+    "title": "Human Readable Report Title",
+    "description": "One or two sentences describing what this report reveals.",
+    "category": "one of: {$categories}",
+    "sql": "SELECT ... (valid MySQL 8.0 query using only the tables in the schema above)",
+    "chart_type": "one of: bar | line | pie | doughnut | scatter",
+    "x_axis": "column name from the SELECT to use as the X axis or label",
+    "y_axis": "column name from the SELECT to use as the Y axis or numeric value",
+    "parameters": []
+  }
+]
+
+Rules for the sql field:
+- Use ONLY the tables: {$tablesList}
+- Always alias computed columns with descriptive snake_case names
+- The column names in x_axis and y_axis must exactly match aliases used in the SELECT
+- Add LIMIT 50 to queries that could return many rows
+- Use only standard MySQL 8.0 syntax
+- Every query must start with SELECT
+{$drilldown}
+{$placeholder}
+USER;
+    }
+
+    private function buildDrilldownBlock(): string
+    {
+        if ($this->config->drilldown === null) {
+            return '';
+        }
+
+        $d           = $this->config->drilldown;
+        $r           = $d['required_report'];
+        $placeholder = $d['placeholder'];
+        $category    = $d['category'];
+        $title       = $r['title'];
+        $id          = $r['id'];
+        $shape       = $r['shape_description'];
+        $sqlExample  = $r['sql_example'];
+
+        return <<<DRILL
+
+
+Required: include EXACTLY ONE report in the "{$category}" category. This report must:
+- Be titled "{$title}" (id: "{$id}")
+- {$shape}
+- Use the placeholder :{$placeholder} in the WHERE clause (the app binds this at runtime)
+- Declare "parameters": ["{$placeholder}"] in the JSON spec
+- Example SQL shape:
+{$sqlExample}
+DRILL;
+    }
+
+    private function buildPlaceholderRules(): string
+    {
+        $names = array_keys($this->config->allowedPlaceholders);
+
+        if (empty($names)) {
+            return "\n\nReports MUST NOT contain any :placeholder tokens. parameters MUST be the empty array [].";
+        }
+
+        if (count($names) === 1) {
+            $only = $names[0];
+            return "\n\nFor all OTHER reports, parameters MUST be the empty array [].\n:{$only} is the ONLY placeholder allowed; any other placeholder will be rejected.";
+        }
+
+        $list = implode(', ', array_map(static fn(string $n): string => ":{$n}", $names));
+        return "\n\nFor all OTHER reports, parameters MUST be the empty array [].\nAllowed placeholders: {$list}. Any other placeholder will be rejected.";
     }
 }

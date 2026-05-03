@@ -9,11 +9,16 @@
         'subject_analysis'        => 'warning',
         'student_drilldown'       => 'dark',
     ];
-    $badge = $catColors[$config['category']] ?? 'secondary';
-    $needsStudentId = $needsStudentId ?? false;
-    $studentId      = $studentId ?? 0;
-    $student        = $student ?? null;
-    $pdfUrl = base_url('reports/pdf/' . esc($config['report_id'])) . ($needsStudentId && $studentId ? '?student_id=' . $studentId : '');
+    $badge        = $catColors[$config['category']] ?? 'secondary';
+    $needsParam   = $needsParam   ?? false;
+    $entityId     = $entityId     ?? 0;
+    $entity       = $entity       ?? null;
+    $entityLabel  = $entityLabel  ?? null;
+    $entityDetail = $entityDetail ?? null;
+    $entityNoun   = $entityNoun   ?? 'Item';
+    $placeholder  = $placeholder  ?? 'id';
+    $searchRoute  = $searchRoute  ?? '/';
+    $pdfUrl = base_url('reports/pdf/' . esc($config['report_id'])) . ($needsParam && $entityId ? '?' . esc($placeholder) . '=' . $entityId : '');
 ?>
 
 <!-- Report header -->
@@ -29,7 +34,7 @@
         <p class="text-muted mb-0"><?= esc($config['description']) ?></p>
     </div>
     <div class="d-flex gap-2">
-        <?php if (!$needsStudentId || $student !== null): ?>
+        <?php if (!$needsParam || $entity !== null): ?>
         <a href="<?= esc($pdfUrl) ?>" class="btn btn-outline-secondary">
             <i class="bi bi-file-earmark-pdf"></i> Export PDF
         </a>
@@ -40,38 +45,39 @@
     </div>
 </div>
 
-<?php if ($needsStudentId): ?>
-<!-- Student picker -->
+<?php if ($needsParam): ?>
+<!-- Entity picker -->
 <div class="card border-0 shadow-sm mb-4">
     <div class="card-body">
-        <label for="studentSearch" class="form-label small fw-semibold text-muted text-uppercase mb-2">
-            <i class="bi bi-person-fill"></i> Select Student
+        <label for="entitySearch" class="form-label small fw-semibold text-muted text-uppercase mb-2">
+            <i class="bi bi-person-fill"></i> Select <?= esc($entityNoun) ?>
         </label>
         <div class="position-relative" style="max-width:480px">
             <input type="text"
-                   id="studentSearch"
+                   id="entitySearch"
                    class="form-control"
-                   placeholder="Type a name (first or last)…"
+                   placeholder="Type a name…"
                    autocomplete="off"
-                   value="<?= $student ? esc($student['first_name'] . ' ' . $student['last_name']) : '' ?>">
-            <div id="studentResults" class="dropdown-menu w-100 shadow-sm" style="max-height:280px; overflow-y:auto"></div>
+                   value="<?= $entityLabel ? esc($entityLabel) : '' ?>">
+            <div id="entityResults" class="dropdown-menu w-100 shadow-sm" style="max-height:280px; overflow-y:auto"></div>
         </div>
-        <?php if ($student): ?>
+        <?php if ($entity): ?>
         <div class="mt-2 small text-muted">
-            Showing data for <strong><?= esc($student['first_name'] . ' ' . $student['last_name']) ?></strong>
-            (<?= esc($student['email']) ?>) — student #<?= esc($student['id']) ?>
+            Showing data for <strong><?= esc($entityLabel) ?></strong>
+            <?php if ($entityDetail !== null && $entityDetail !== ''): ?>(<?= esc($entityDetail) ?>)<?php endif; ?>
+            &mdash; <?= esc(strtolower($entityNoun)) ?> #<?= esc($entityId) ?>
         </div>
         <?php endif; ?>
     </div>
 </div>
 <?php endif; ?>
 
-<?php if ($needsStudentId && $student === null): ?>
-<!-- Empty state: no student selected -->
+<?php if ($needsParam && $entity === null): ?>
+<!-- Empty state: no entity selected -->
 <div class="card border-0 shadow-sm">
     <div class="card-body text-center py-5">
         <i class="bi bi-person-bounding-box" style="font-size:2.5rem; color:#cbd5e1"></i>
-        <h6 class="mt-3 text-muted">Search and select a student above to view this report.</h6>
+        <h6 class="mt-3 text-muted">Search and select a <?= esc(strtolower($entityNoun)) ?> above to view this report.</h6>
     </div>
 </div>
 
@@ -126,12 +132,15 @@
 
 <?= $this->section('scripts') ?>
 
-<?php if ($needsStudentId): ?>
+<?php if ($needsParam): ?>
 <script>
 (function() {
-    const input  = document.getElementById('studentSearch');
-    const drop   = document.getElementById('studentResults');
-    const reportId = <?= json_encode($config['report_id']) ?>;
+    const input       = document.getElementById('entitySearch');
+    const drop        = document.getElementById('entityResults');
+    const reportId    = <?= json_encode($config['report_id']) ?>;
+    const searchUrl   = <?= json_encode(base_url(ltrim((string) $searchRoute, '/'))) ?>;
+    const placeholder = <?= json_encode($placeholder) ?>;
+    const reportUrl   = <?= json_encode(base_url('reports/' . $config['report_id'])) ?>;
     let timer = null;
 
     function close() { drop.classList.remove('show'); drop.innerHTML = ''; }
@@ -144,19 +153,20 @@
 
         timer = setTimeout(async function() {
             try {
-                const res = await fetch('<?= base_url('students/search') ?>?q=' + encodeURIComponent(q));
+                const res = await fetch(searchUrl + '?q=' + encodeURIComponent(q));
                 const data = await res.json();
                 if (!Array.isArray(data) || data.length === 0) {
                     drop.innerHTML = '<div class="dropdown-item-text text-muted small">No matches</div>';
                     open();
                     return;
                 }
-                drop.innerHTML = data.map(s =>
-                    `<a class="dropdown-item" href="<?= base_url('reports/' . $config['report_id']) ?>?student_id=${s.id}">
+                drop.innerHTML = data.map(s => {
+                    const detail = s.detail || s.email || '';
+                    return `<a class="dropdown-item" href="${reportUrl}?${encodeURIComponent(placeholder)}=${s.id}">
                         <span class="fw-semibold">${escapeHtml(s.name)}</span>
-                        <span class="text-muted small ms-1">${escapeHtml(s.email)}</span>
-                    </a>`
-                ).join('');
+                        ${detail ? `<span class="text-muted small ms-1">${escapeHtml(detail)}</span>` : ''}
+                    </a>`;
+                }).join('');
                 open();
             } catch (e) {
                 drop.innerHTML = '<div class="dropdown-item-text text-danger small">Search failed</div>';

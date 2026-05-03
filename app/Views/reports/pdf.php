@@ -44,10 +44,10 @@
 <div class="header">
     <div class="category-badge"><?= htmlspecialchars(str_replace('_', ' ', $config['category'])) ?></div>
     <h1><?= htmlspecialchars($config['title']) ?></h1>
-    <?php if (!empty($student)): ?>
+    <?php if (!empty($entity)): ?>
     <div class="meta">
-        Student: <strong><?= htmlspecialchars($student['first_name'] . ' ' . $student['last_name']) ?></strong>
-        (<?= htmlspecialchars($student['email']) ?>)
+        <?= htmlspecialchars($entityNoun ?? 'Entity') ?>: <strong><?= htmlspecialchars($entityLabel ?? '') ?></strong>
+        <?php if (!empty($entityDetail)): ?>(<?= htmlspecialchars($entityDetail) ?>)<?php endif; ?>
         &nbsp;|&nbsp;
         Generated: <?= htmlspecialchars($generated) ?>
     </div>

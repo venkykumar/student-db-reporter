@@ -5,6 +5,7 @@ namespace App\Controllers;
 use App\Models\ReportConfigModel;
 use App\Services\ClaudeService;
 use App\Services\SchemaInspectorService;
+use Config\Reports as ReportsConfig;
 
 class Analysis extends BaseController
 {
@@ -75,9 +76,10 @@ class Analysis extends BaseController
             throw new \RuntimeException('Claude did not return a valid JSON array. Raw: ' . substr($rawJson, 0, 500));
         }
 
-        $required           = ['id', 'title', 'sql'];
-        $forbidden          = ['DROP', 'DELETE', 'UPDATE', 'INSERT', 'ALTER', 'TRUNCATE', 'GRANT', 'REVOKE'];
-        $allowedPlaceholders = ['student_id'];
+        $config              = new ReportsConfig();
+        $required            = ['id', 'title', 'sql'];
+        $forbidden           = ['DROP', 'DELETE', 'UPDATE', 'INSERT', 'ALTER', 'TRUNCATE', 'GRANT', 'REVOKE'];
+        $allowedPlaceholders = array_keys($config->allowedPlaceholders);
         $valid               = [];
 
         foreach ($data as $item) {

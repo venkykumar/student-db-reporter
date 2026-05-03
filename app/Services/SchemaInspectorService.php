@@ -3,14 +3,17 @@
 namespace App\Services;
 
 use CodeIgniter\Database\BaseConnection;
+use Config\Reports as ReportsConfig;
 
 class SchemaInspectorService
 {
     private BaseConnection $db;
+    private ReportsConfig $config;
 
-    public function __construct()
+    public function __construct(?ReportsConfig $config = null)
     {
-        $this->db = \Config\Database::connect();
+        $this->db     = \Config\Database::connect();
+        $this->config = $config ?? new ReportsConfig();
     }
 
     public function inspect(): array
@@ -55,11 +58,19 @@ class SchemaInspectorService
 
     private function getSampleRows(): array
     {
-        $tables   = ['students', 'subjects', 'grades', 'student_subject_completion'];
-        $samples  = [];
+        if ($this->config->sampleRowLimit <= 0) {
+            return [];
+        }
 
-        foreach ($tables as $table) {
-            $rows = $this->db->query("SELECT * FROM `{$table}` LIMIT 3")->getResultArray();
+        $limit   = (int) $this->config->sampleRowLimit;
+        $samples = [];
+
+        foreach ($this->config->tables as $table) {
+            // Defensive: config is trusted but the table name is interpolated into SQL.
+            if (!preg_match('/^[A-Za-z0-9_]+$/', (string) $table)) {
+                continue;
+            }
+            $rows = $this->db->query("SELECT * FROM `{$table}` LIMIT {$limit}")->getResultArray();
             $samples[$table] = $rows;
         }
 
