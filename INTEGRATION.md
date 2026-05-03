@@ -1,258 +1,119 @@
 # Integration Guide
 
-Add this app's **AI-driven report generator** to an existing CodeIgniter 4 project.
+Drop this app's AI-driven report generator into an existing CodeIgniter 4 project. You add 3 services + 1 model + 2 controllers + 4 views + 1 config file. No migrations.
 
-> **Outcome:** three new pages — `/analysis`, `/reports`, `/reports/{id}` — that ask Claude to look at your live MySQL schema, generate 6–10 reports, and render each one as a Chart.js chart and table. Optionally a `/students/search` typeahead for per-entity drilldown.
-
----
-
-## Is this for me? (30 seconds)
-
-**Fits if:** you have a CI4 4.x app on MySQL 5.7+/8.x, you can install two Composer packages, and you have an Anthropic API key.
-
-**You'll get:** Claude reads your `INFORMATION_SCHEMA` plus a 3-row sample per table, returns 6–10 report specs, and the app caches them in a JSON file under `writable/`. No new database tables, no migrations.
-
-**Not in scope:** auth, multi-tenancy, scheduled regeneration, write queries (the SQL validator rejects DML).
+**End state:** `/analysis` runs Claude against your live schema; `/reports` lists 6–10 generated reports; `/reports/{id}` renders each as a Chart.js chart and a table. Optional `/students/search` typeahead for per-entity drilldown.
 
 ```
-┌─────────────────┐    schema + samples    ┌──────────┐
-│ Your MySQL DB   │ ─────────────────────▶ │  Claude  │
-└─────────────────┘                        └────┬─────┘
-        ▲                                       │ JSON: 6–10 report specs
-        │ validated SELECT only                  ▼
-        │                                ┌──────────────────────┐
-        └────────────────── runs the SQL │ writable/            │
-                                         │   report_configs.json│
-                                         └──────────┬───────────┘
-                                                    ▼
-                                            /reports renders each
-                                            spec as a chart + table
+your DB ──schema + samples──▶ Claude ──JSON specs──▶ writable/report_configs.json ──▶ /reports
+   ▲                                                                                    │
+   └──────────────── validated SELECT only ─────────────────────────────────────────────┘
 ```
-
----
 
 ## Prerequisites
 
-- [ ] CodeIgniter 4.x
-- [ ] PHP 8.1+ (8.2 tested)
-- [ ] MySQL 5.7+ or 8.x with `INFORMATION_SCHEMA` read access for the app's DB user
-- [ ] Composer
-- [ ] Anthropic API key — https://console.anthropic.com
-- [ ] `writable/` is writable by the PHP user (CI4 already needs this)
+CI4 4.x · PHP 8.1+ · MySQL 5.7+ with `INFORMATION_SCHEMA` read access · Composer · Anthropic API key · writable `writable/`.
 
-The reporter reads from your existing CI4 DB connection (configured in `app/Config/Database.php`). By default it uses the `default` connection group; override via `Config\Reports::$connectionGroup` to point at a read replica or analytics DB. **No new connection setup is required** if your app already talks to MySQL.
+The reporter uses your CI4 default DB connection group. Override `Config\Reports::$connectionGroup` to point at a read replica.
 
 ---
 
 ## Phase 1 — Install (≈10 min)
 
-### 1.1 Composer
+**1. Composer**
 
 ```bash
 composer require guzzlehttp/guzzle:^7.0
-composer require dompdf/dompdf:^2.0   # only if you want PDF export
+composer require dompdf/dompdf:^2.0   # PDF export, optional
 ```
 
-> **Gotcha — non-default namespace.** If your CI4 app uses `Acme\` instead of `App\`, update the `namespace` and `use` lines in every PHP file you copy in step 1.2.
+**2. Copy these files into your app at the same paths.** The "skip" column says when you can omit a file.
 
-### 1.2 Copy files
+| File | Skip if… |
+|---|---|
+| `app/Config/Reports.php` | never — Phase 2 lives here |
+| `app/Services/{Claude,SchemaInspector,ReportExecutor}Service.php` | never |
+| `app/Models/ReportConfigModel.php` | never |
+| `app/Controllers/{Analysis,Reports}.php` | never |
+| `app/Views/analysis/index.php`, `app/Views/reports/{index,view}.php` | never |
+| `app/Controllers/Students.php` | no drilldown |
+| `app/Services/PdfExportService.php`, `app/Views/reports/pdf.php` | no PDF export |
+| `app/Models/StudentModel.php` | no drilldown — otherwise adapt to your entity (see Phase 3) |
+| `app/Views/layout/main.php` | you have your own — change `extend('layout/main')` in the report views |
+| `app/Controllers/BaseController.php` | always — merge into yours, keep your version |
+| `app/Controllers/Dashboard.php`, demo `*Model.php`, `docker/`, `tests/` | always — demo-only |
 
-| File | Required? | Notes |
-|---|---|---|
-| `app/Config/Reports.php` | ✓ required | **The only file you'll edit. Phase 2 lives here.** |
-| `app/Services/ClaudeService.php` | ✓ required | Reads tables / drilldown / placeholders from `Config\Reports` |
-| `app/Services/SchemaInspectorService.php` | ✓ required | Samples tables listed in `Config\Reports::$tables` |
-| `app/Services/ReportExecutorService.php` | ✓ required | Validates SELECT-only; appends LIMIT; binds named params |
-| `app/Models/ReportConfigModel.php` | ✓ required | File-backed cache for `writable/report_configs.json` (no DB) |
-| `app/Controllers/Analysis.php` | ✓ required | Orchestrates: schema → Claude → cache |
-| `app/Controllers/Reports.php` | ✓ required | List / view / PDF |
-| `app/Views/reports/index.php` | ✓ required | Card grid |
-| `app/Views/reports/view.php` | ✓ required | Chart + table + (optional) entity picker |
-| `app/Views/analysis/index.php` | ✓ required | Run / Regenerate buttons |
-| `app/Controllers/Students.php` | ○ optional | Drilldown typeahead. Skip if `Config\Reports::$drilldown = null` |
-| `app/Services/PdfExportService.php` | ○ optional | Skip if no PDF |
-| `app/Views/reports/pdf.php` | ○ optional | Skip if no PDF |
-| `app/Views/layout/main.php` | △ adapt | Replace with your own layout — see 1.2a |
-| `app/Controllers/BaseController.php` | ✗ do NOT overwrite | Merge into yours; the new controllers extend `BaseController` |
-| `app/Models/StudentModel.php` | △ adapt | See Phase 3.2 — your own entity model with `find()` and `searchByName()` |
-| `app/Controllers/Dashboard.php`, demo `*Model.php`, `docker/`, `tests/` | ✗ skip | Demo-only |
-
-#### 1.2a Layout
-
-The donor views extend `layout/main` (Bootstrap 5 + Chart.js + Bootstrap Icons via CDN). Two options:
-
-- **Lift-and-fit:** copy `layout/main.php` as `layout/reports.php` and have only the report views extend it.
-- **Reuse yours:** in `reports/index.php`, `reports/view.php`, `analysis/index.php`, change `$this->extend('layout/main')` to your layout. Make sure your layout loads Chart.js (or wrap it in `$this->section('scripts')`).
-
-### 1.3 Routes
-
-Add to `app/Config/Routes.php`:
+**3. Routes** in `app/Config/Routes.php`:
 
 ```php
 $routes->get('/reports',                'Reports::index');
 $routes->get('/reports/pdf/(:segment)', 'Reports::exportPdf/$1');
 $routes->get('/reports/(:segment)',     'Reports::view/$1');
-
 $routes->get('/analysis',               'Analysis::index');
 $routes->post('/analysis/run',          'Analysis::run');
 $routes->post('/analysis/regenerate',   'Analysis::regenerate');
-
-// Optional — only if you keep the drilldown
-$routes->get('/students/search',        'Students::search');
+$routes->get('/students/search',        'Students::search');   // drilldown only
 ```
 
-> **Gotcha — route conflicts.** If `/reports` or `/students` clash with existing routes, prefix them (`/ai-reports`, `/ai-analysis`). Update the redirect targets in `Analysis::runAnalysis` (search for `'/dashboard'` and `'/analysis'`) and links in the views.
-
-### 1.4 Environment
-
-Add to `.env`:
+**4. `.env`**
 
 ```ini
-CLAUDE_API_KEY = sk-ant-api03-xxxxxxxxxxxxxx
+CLAUDE_API_KEY = sk-ant-...
 CLAUDE_MODEL   = claude-sonnet-4-6
 ```
 
-`ClaudeService` looks up `CLAUDE_API_KEY` first, then `ANTHROPIC_API_KEY`, falling back to `getenv()` for OS-level vars.
+`ANTHROPIC_API_KEY` and OS-level env vars also work.
 
-### 1.5 CSRF
+**5. CSRF.** The two POST routes need a token. The donor `analysis/index.php` calls `csrf_field()`, so default CI4 CSRF works out of the box — no action needed unless you build a custom form or call from curl.
 
-The two POST routes (`/analysis/run`, `/analysis/regenerate`) require a CSRF token. The donor `analysis/index.php` already calls `csrf_field()`, so if CI4's CSRF filter is enabled (default), it works. Two scenarios to watch:
-
-- **Custom analysis form:** include `<?= csrf_field() ?>` inside `<form>`.
-- **Curl/script-driven analysis:** add the routes to your `Filters::$globals` exemption list, or send the token header.
-
-### ✓ Phase 1 gates
-
-```bash
-php spark routes | grep -E '(analysis|reports|students)'   # 6 or 7 routes
-curl -fI http://localhost:8080/analysis                    # HTTP/200
-composer dump-autoload                                     # if you copied files manually
-```
-
-> **Gotcha — `Class App\… not found`.** Run `composer dump-autoload`. If you renamed namespaces, update every `use` line in the copied files.
+✓ **Gate:** `composer dump-autoload && php spark routes | grep analysis` shows the routes; `curl -fI http://localhost:8080/analysis` returns 200.
 
 ---
 
-## Phase 2 — Point it at your schema (≈15 min)
+## Phase 2 — Point it at your schema (≈10 min)
 
-This is the only configuration step. Open `app/Config/Reports.php` and edit four properties.
+Open `app/Config/Reports.php`. The file is heavily commented; the only edits a typical integration needs are:
 
 ```php
-<?php
-namespace Config;
-
-class Reports
-{
-    /** Tables Claude may read AND that get sampled for the prompt. */
-    public array $tables = [
-        'pupils',          // ← your tables here
-        'courses',
-        'assessments',
-    ];
-
-    /** CI4 DB connection group. 'default' uses app/Config/Database.php's default group. */
-    public string $connectionGroup = 'default';
-
-    /** Rows per table sent as sample data. 0 disables sampling. */
-    public int $sampleRowLimit = 3;
-
-    /** LIMIT auto-appended to any generated SELECT lacking one. */
-    public int $maxRowsPerReport = 200;
-
-    /** Range Claude is asked to produce. */
-    public int $minReports = 6;
-    public int $maxReports = 10;
-
-    /** Categories Claude may assign. The drilldown's category must appear here. */
-    public array $categories = [
-        'academic_performance', 'completion_tracking',
-        'enrollment_demographics', 'subject_analysis',
-    ];
-
-    /** :placeholder name => 'int'|'string' cast. Empty array disables drilldown. */
-    public array $allowedPlaceholders = [];
-
-    /** Drilldown picker. Set to null to skip the entire drilldown surface. */
-    public ?array $drilldown = null;     // ← null for now; come back in Phase 3
-}
+public array $tables = ['pupils', 'courses', 'assessments'];   // your tables
+public string $connectionGroup = 'default';                    // or 'analytics' / 'replica'
+public array $categories = [                                   // drop 'student_drilldown' if no drilldown
+    'academic_performance', 'completion_tracking',
+];
+public array $allowedPlaceholders = [];        // empty = no parameterised reports
+public ?array $drilldown = null;               // see Phase 3 to enable
 ```
 
-> **Gotcha — schema-coupled categories.** The donor's defaults include `student_drilldown`. If you set `$drilldown = null`, drop it from `$categories` (or keep it harmless). If you keep drilldown but rename the entity, change the `category` value inside `$drilldown` too.
+Leave `$sampleRowLimit`, `$maxRowsPerReport`, and `$min/maxReports` at their defaults until you have a reason to change them.
 
-> **Gotcha — DB user permissions.** The user needs `SELECT` on `INFORMATION_SCHEMA.COLUMNS`, `INFORMATION_SCHEMA.KEY_COLUMN_USAGE`, **and** every table in `$tables`. Read-only is fine — no writes are needed anywhere.
-
-### ✓ Phase 2 gates
-
-```bash
-# Verify your DB user can read INFORMATION_SCHEMA
-mysql -u <app_user> -p -e "SELECT COUNT(*) FROM information_schema.columns
-                            WHERE table_schema = DATABASE();"
-
-# Run the analysis (admin-only in production!)
-curl -X POST http://localhost:8080/analysis/run -d "<csrf>"
-# Expect a 302 redirect with success flash like "Analysis complete! 8 reports generated."
-
-# Inspect the cache
-jq 'length, .[].report_id' writable/report_configs.json
-
-# Render the first report
-curl -fI "http://localhost:8080/reports/$(jq -r '.[0].report_id' writable/report_configs.json)"
-```
-
-> **Gotcha — "Claude returned no valid report configurations".** Tail `writable/logs/log-*.php`. Most common cause: Claude's SQL referenced a column that doesn't exist or a table not in `$tables`. Either tighten `$tables` or set `$sampleRowLimit` higher so Claude has more context.
-
-> **Gotcha — chart renders empty.** The cached `x_axis` or `y_axis` doesn't match a SELECT alias. Inspect the cache (`jq '.[] | {id: .report_id, x: .x_axis, y: .y_axis, sql: .sql_query}' writable/report_configs.json`), regenerate, or hand-edit.
+✓ **Gate:** POST `/analysis/run` redirects with success flash; `jq 'length' writable/report_configs.json` returns 6–10; opening any `/reports/{id}` renders a chart.
 
 ---
 
-## Phase 3 — Add drilldown (optional)
+## Phase 3 — Drilldown (optional)
 
-A drilldown lets a single report be parameterised by entity ID — pick a student, see only their grades. Skip this phase for read-only dashboard reports.
+Lets one report be filtered by an entity ID — pick a teacher, see only their classes.
 
-### 3.1 Decide your entity
-
-Pick the noun. Examples:
-- Demo: `student` (placeholder `student_id`)
-- Other: `teacher`, `cohort`, `class`, `pupil`
-
-### 3.2 Add searchByName() to your model
-
-The drilldown picker calls two methods on your CI4 Model:
-
-- `find($id)` — built into `CodeIgniter\Model`, free.
-- `searchByName(string $q, int $limit): array` — you write this.
-
-Reference shape (from `app/Models/StudentModel.php`):
+**1. Add `searchByName()` to your entity model** (`find()` is built into `CodeIgniter\Model`):
 
 ```php
 public function searchByName(string $q, int $limit = 20): array
 {
-    $q = trim($q);
-    if ($q === '') return [];
-
-    return $this->select('id, first_name, last_name, email')
+    return $q === '' ? [] : $this
+        ->select('id, first_name, last_name, email')
         ->groupStart()
             ->like('first_name', $q, 'after')
-            ->orLike('last_name',  $q, 'after')
+            ->orLike('last_name', $q, 'after')
         ->groupEnd()
-        ->orderBy('last_name', 'ASC')
-        ->limit($limit)
-        ->find();
+        ->limit($limit)->find();
 }
 ```
 
-### 3.3 Fill the drilldown config
-
-Back in `app/Config/Reports.php`:
+**2. Fill `$drilldown` in `Config/Reports.php`:**
 
 ```php
-public array $allowedPlaceholders = [
-    'teacher_id' => 'int',
-];
-
-public array $categories = [
-    'academic_performance', 'subject_analysis', 'teacher_drilldown',
-];
+public array $allowedPlaceholders = ['teacher_id' => 'int'];
+public array $categories = ['academic_performance', 'teacher_drilldown'];
 
 public ?array $drilldown = [
     'placeholder'    => 'teacher_id',
@@ -264,159 +125,65 @@ public ?array $drilldown = [
     'required_report' => [
         'id'                => 'teacher_class_average',
         'title'             => 'Class Average for Teacher',
-        'shape_description' => "Average score across every class this teacher runs",
-        'sql_example'       => <<<SQL
-    SELECT c.name AS class_name, AVG(g.score) AS avg_score
-    FROM grades g
-    JOIN classes c ON g.class_id = c.id
-    WHERE c.teacher_id = :teacher_id
-    GROUP BY c.id, c.name
-    ORDER BY c.name
-SQL,
+        'shape_description' => 'Average score across every class this teacher runs',
+        'sql_example'       => "SELECT c.name AS class_name, AVG(g.score) AS avg_score FROM grades g JOIN classes c ON g.class_id = c.id WHERE c.teacher_id = :teacher_id GROUP BY c.id, c.name",
     ],
 ];
 ```
 
-### 3.4 Wire the typeahead route
+**3.** Update the route to match `search_route` (`/teachers/search` → `Teachers::search`); rename `Students.php` to `Teachers.php` if the entity changed (the controller is config-driven — no other edits).
 
-Either copy `app/Controllers/Students.php` and rename to `Teachers.php` (it's already config-driven — the only schema reference is the model class via `Config\Reports::$drilldown['model']`), or just rename the route's path to match what you set in `search_route`:
+**4.** Click *Regenerate* on `/analysis` so Claude rebuilds against the new prompt.
 
-```php
-$routes->get('/teachers/search', 'Teachers::search');
-```
-
-### 3.5 Regenerate
-
-The cached `report_configs.json` was built against the old prompt — run `Regenerate` from `/analysis` (or POST to `/analysis/regenerate`) so Claude rebuilds against the new drilldown spec.
-
-### ✓ Phase 3 gates
-
-```bash
-curl 'http://localhost:8080/teachers/search?q=Smith' | jq '.[0] | {id, name, detail}'
-# Expect rows with id, name, detail keys.
-
-REPORT_ID=$(jq -r '.[] | select(.parameters | length > 0) | .report_id' writable/report_configs.json | head -1)
-curl -fI "http://localhost:8080/reports/${REPORT_ID}?teacher_id=1"
-# 200, page renders the picker pre-populated.
-```
+✓ **Gate:** `curl '/teachers/search?q=Smith' | jq '.[0]'` returns `{id, name, detail, …}`.
 
 ---
 
-## Phase 4 — Production hardening
+## Phase 4 — Production checklist
 
-| Concern | What the app does | What you should add |
-|---|---|---|
-| API key leak | Read via `env()`; never logged | Rotate; store in a secrets manager |
-| Malicious SQL | Validator rejects DML keywords + unknown placeholders. SELECT-only enforced at execute time | Defence in depth, **not a sandbox**. Use a **read-only DB user** for the app's data tables — the cache is a JSON file so the DB never needs write privileges |
-| Cache tampering | `writable/report_configs.json` is plain text on disk | Treat `writable/` as trusted. Periodic `Regenerate` overwrites tampering |
-| Multiple instances | Each instance owns its own cache file | Mount a shared volume or pass an absolute path: `new ReportConfigModel('/shared/report_configs.json')` |
-| Anyone can hit `/analysis` and burn API credit | No auth — wide open | Put the route behind your auth filter. Admin-only in most cases |
-| Anyone can run cached SQL | Validator is pre-execution; the cached SQL still queries any data in `$tables` | Restrict `/reports` to roles cleared to see all rows in `$tables` |
-| Long Claude call blocks the request | 60 s Guzzle timeout | Move `Analysis::run` to a queue (CI4 Tasks, Beanstalkd) if users hit timeouts |
-| AI report queries hit the primary DB | Uses `$connectionGroup = 'default'` | Define a read-replica or analytics group in `app/Config/Database.php` and set `Config\Reports::$connectionGroup` to its name. Keeps long aggregate scans off the write primary |
-| PII in schema sample | `SELECT * FROM {table} LIMIT N` — first N rows hit Claude | Either set `$sampleRowLimit = 0`, or redact in `SchemaInspectorService::getSampleRows()`, or run analysis only against a non-prod DB whose schema mirrors prod |
-| Cost | ~$0.01–$0.05 per analysis call | Don't expose `/analysis/run` to anonymous traffic; rate-limit |
+- **Auth** in front of `/analysis*` (admin only — burns API credit and runs cached SQL).
+- **Read-only DB user** for `$tables` + `INFORMATION_SCHEMA`. The validator is defence in depth, not a sandbox.
+- **Read replica** via `$connectionGroup` so report scans don't hit the primary.
+- **Shared cache** (`new ReportConfigModel('/shared/report_configs.json')`) if you autoscale.
+- **PII in samples** — `$sampleRowLimit = 0` to disable, or redact in `SchemaInspectorService::getSampleRows()`. Each `/analysis/run` sends N rows from each `$tables` entry to Claude.
+- **Queue** `/analysis/run` if the 60 s Guzzle timeout is too tight (CI4 Tasks, Beanstalkd, etc).
+- **Rotate** `CLAUDE_API_KEY` on a schedule; never log or bake into images.
 
 ---
 
-## Cookbook
+## Cookbook diffs
 
-### "I have a `pupils` / `courses` / `assessments` schema, no drilldown"
-
-```php
-// app/Config/Reports.php  — diff vs default
-- 'students', 'subjects', 'grades', 'student_subject_completion',
-+ 'pupils', 'courses', 'assessments',
-
-- public array $categories = [
--     'academic_performance', 'completion_tracking',
--     'enrollment_demographics', 'subject_analysis', 'student_drilldown',
-- ];
-+ public array $categories = [
-+     'academic_performance', 'completion_tracking',
-+     'enrollment_demographics',
-+ ];
-
-- public array $allowedPlaceholders = [ 'student_id' => 'int' ];
-+ public array $allowedPlaceholders = [];
-
-- public ?array $drilldown = [ ... ];
-+ public ?array $drilldown = null;
-```
-
-That's the entire integration. Skip `Students.php`, skip `searchByName`, skip the `/students/search` route.
-
-### "I want a per-teacher drilldown instead of per-student"
-
-See Phase 3 above. The only file edit beyond `Config/Reports.php` is adding `searchByName()` to `TeacherModel`.
-
-### "I want reports to hit a read replica, not my primary DB"
-
-In `app/Config/Database.php`, define a second group alongside `default`:
-
-```php
-public array $analytics = [
-    'DSN'      => '',
-    'hostname' => 'replica.internal',
-    'username' => 'analytics_ro',
-    'password' => '...',
-    'database' => 'student_db',
-    'DBDriver' => 'MySQLi',
-    // ... rest mirrors $default
-];
-```
-
-Then in `app/Config/Reports.php`:
+**Read replica:** define `public array $analytics = [...]` in `app/Config/Database.php`, then in `Config/Reports.php`:
 
 ```diff
 - public string $connectionGroup = 'default';
 + public string $connectionGroup = 'analytics';
 ```
 
-`SchemaInspectorService` and `ReportExecutorService` will both pick it up automatically — no other code changes.
+**Redact PII before sending to Claude:** in `SchemaInspectorService::getSampleRows()`, after the `SELECT *`, walk each row and overwrite sensitive columns. Or `$sampleRowLimit = 0` — schema alone is often enough.
 
-### "I want to redact PII before it goes to Claude"
-
-Edit `SchemaInspectorService::getSampleRows()` — after the `SELECT *`, walk the rows and replace `email` / `phone` / `dob` columns with `'***'` (or set `$sampleRowLimit = 0` to skip sampling entirely; the schema alone is often enough).
+**Single-DB integration with no drilldown:** the Phase 2 snippet above is the entire integration. Skip `Students.php`, skip `searchByName()`, skip `/students/search`.
 
 ---
 
-## Reference
+## Troubleshooting
 
-### `Config\Reports` field reference
+| Symptom | Fix |
+|---|---|
+| `Class App\… not found` | `composer dump-autoload`; if you renamed namespaces, update every `use` line |
+| "Claude returned no valid report configurations" | Tail `writable/logs/log-*.php`. Usually Claude referenced a column that doesn't exist or a table outside `$tables` |
+| Chart renders empty | `x_axis` / `y_axis` doesn't match a SELECT alias. `jq '.[] \| {report_id, x_axis, y_axis, sql_query}' writable/report_configs.json` to inspect; regenerate or hand-edit |
+| `writable/report_configs.json` permission denied | `chmod -R u+w writable/` (same user as logs/sessions) |
+| `/analysis/run` 403 | CSRF token missing — include `csrf_field()` or exempt the route |
+| `/reports` clashes with an existing route | Prefix to `/ai-reports`; update redirects in `Analysis::runAnalysis` and links in views |
 
-| Field | Type | Default | Read by |
-|---|---|---|---|
-| `$tables` | `list<string>` | `['students','subjects','grades','student_subject_completion']` | `SchemaInspectorService`, `ClaudeService` |
-| `$connectionGroup` | `string` | `'default'` | `SchemaInspectorService`, `ReportExecutorService` |
-| `$sampleRowLimit` | `int` | `3` | `SchemaInspectorService` |
-| `$maxRowsPerReport` | `int` | `200` | `ReportExecutorService` |
-| `$minReports` / `$maxReports` | `int` / `int` | `6` / `10` | `ClaudeService` |
-| `$categories` | `list<string>` | 5 demo categories | `ClaudeService` |
-| `$allowedPlaceholders` | `array<string,'int'\|'string'>` | `['student_id'=>'int']` | `Analysis`, `ReportExecutorService`, `ClaudeService` |
-| `$drilldown` | `array\|null` | student drilldown | `Reports`, `Students`, `ClaudeService` |
+---
 
-### Generated report JSON shape
-
-```json
-{
-  "id": "snake_case_unique_identifier",
-  "title": "Human Readable Report Title",
-  "description": "...",
-  "category": "one of $categories",
-  "sql": "SELECT ...",
-  "chart_type": "bar | line | pie | doughnut | scatter",
-  "x_axis": "alias from SELECT",
-  "y_axis": "alias from SELECT",
-  "parameters": []
-}
-```
-
-### Tests bundled with this repo
+## Tests
 
 ```bash
-docker compose run --rm --entrypoint php app tests/smoke.php   # no DB / no API
+docker compose run --rm --entrypoint php app tests/smoke.php          # no DB / no API
 docker compose up -d && docker compose exec app php tests/integration.php
 ```
 
-See `tests/README.md` for running against pre-existing containers.
+See `tests/README.md` for variants.
