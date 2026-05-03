@@ -1,10 +1,16 @@
 /vendor/
 /.env
+/writable/report_configs.json
 /writable/logs/*
 /writable/cache/*
 /writable/session/*
+/writable/debugbar/*
+/writable/uploads/*
 !/writable/logs/.gitkeep
 !/writable/cache/.gitkeep
 !/writable/session/.gitkeep
+!/writable/debugbar/.gitkeep
+!/writable/uploads/.gitkeep
 /.idea/
+/.claude/
 *.DS_Store

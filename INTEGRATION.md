@@ -257,6 +257,18 @@ Walk through this checklist after wiring everything up:
 
 If step 4 fails with a 500 or a flash error, tail your CI4 logs (`writable/logs/log-*.php`) — the orchestrator catches all exceptions and writes them there before redirecting.
 
+This repo also includes automated smoke tests for the demo app. Run the fast
+suite and the Docker Compose integration suite with:
+
+```bash
+docker compose run --rm --entrypoint php app tests/smoke.php
+docker compose up -d
+docker compose exec app php tests/integration.php
+```
+
+For details, including how to run against already-running containers, see
+**[tests/README.md](tests/README.md)**.
+
 ---
 
 ## Security & operational considerations

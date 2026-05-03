@@ -17,6 +17,7 @@ A self-contained PHP CodeIgniter 4 application that connects to any MySQL studen
 - [Running the app](#running-the-app)
   - [Option A — Docker (recommended)](#option-a--docker-recommended)
   - [Option B — Local (no Docker)](#option-b--local-no-docker)
+- [Running tests](#running-tests)
 - [Integrating into your own CI4 project](#integrating-into-your-own-ci4-project)
 - [URL reference](#url-reference)
 - [Tech stack](#tech-stack)
@@ -425,6 +426,21 @@ php -S localhost:8080 -t public/
 Visit **http://localhost:8080** and click **Run AI Analysis**.
 
 > **Note:** PHP's built-in server is fine for development. If you use Apache, ensure `mod_rewrite` is enabled — the `public/.htaccess` file handles CI4's URL routing. If you see 404s on routes with the built-in server, add `public string $uriProtocol = 'PATH_INFO';` to `app/Config/App.php`.
+
+---
+
+## Running tests
+
+This repo includes lightweight smoke tests under `tests/`.
+
+```bash
+docker compose run --rm --entrypoint php app tests/smoke.php
+docker compose up -d
+docker compose exec app php tests/integration.php
+```
+
+For the full command reference, including already-running containers and direct
+`docker exec` usage, see **[tests/README.md](tests/README.md)**.
 
 ---
 
